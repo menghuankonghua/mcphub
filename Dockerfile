@@ -24,7 +24,7 @@ ENV BASE_PATH=$BASE_PATH
 ENV PNPM_HOME=/usr/local/share/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN mkdir -p $PNPM_HOME && \
-  pnpm add -g @amap/amap-maps-mcp-server @playwright/mcp@latest tavily-mcp@latest @modelcontextprotocol/server-github @modelcontextprotocol/server-slack
+  pnpm add -g @amap/amap-maps-mcp-server @executeautomation/playwright-mcp-server tavily-mcp@latest @modelcontextprotocol/server-github @modelcontextprotocol/server-slack
 
 ARG INSTALL_EXT=false
 RUN if [ "$INSTALL_EXT" = "true" ]; then \
@@ -35,7 +35,9 @@ RUN if [ "$INSTALL_EXT" = "true" ]; then \
   echo "Skipping Chrome installation on non-amd64 architecture: $ARCH"; \
   fi; \
   fi
-
+  
+RUN npx -y playwright install
+RUN npx -y playwright install-deps
 RUN uv tool install mcp-server-fetch
 
 WORKDIR /app
