@@ -5,10 +5,11 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ServerInfo, ServerConfig } from '../types/index.js';
-import { loadSettings, saveSettings, expandEnvVars } from '../config/index.js';
+import { loadSettings, saveSettings, expandEnvVars, replaceEnvVars } from '../config/index.js';
 import config from '../config/index.js';
 import { getGroup } from './sseService.js';
 import { getServersInGroup } from './groupService.js';
+import { getSmartRoutingConfig } from '../utils/smartRouting.js';
 import { saveToolsAsVectorEmbeddings, searchToolsByVector } from './vectorSearchService.js';
 
 const servers: { [sessionId: string]: Server } = {};
@@ -89,13 +90,31 @@ export const initializeClientsFromSettings = (isInit: boolean): ServerInfo[] => 
 
     let transport;
     if (conf.type === 'streamable-http') {
-      transport = new StreamableHTTPClientTransport(new URL(conf.url || ''));
+      const options: any = {};
+      if (conf.headers && Object.keys(conf.headers).length > 0) {
+        options.requestInit = {
+          headers: conf.headers,
+        };
+      }
+      transport = new StreamableHTTPClientTransport(new URL(conf.url || ''), options);
     } else if (conf.url) {
       // Default to SSE only when 'conf.type' is not specified and 'conf.url' is available
-      transport = new SSEClientTransport(new URL(conf.url));
+      const options: any = {};
+      if (conf.headers && Object.keys(conf.headers).length > 0) {
+        options.eventSourceInit = {
+          headers: conf.headers,
+        };
+        options.requestInit = {
+          headers: conf.headers,
+        };
+      }
+      transport = new SSEClientTransport(new URL(conf.url), options);
     } else if (conf.command && conf.args) {
       // If type is stdio or if command and args are provided without type
-      const env: Record<string, string> = conf.env || {};
+      const env: Record<string, string> = {
+        ...(process.env as Record<string, string>), // Inherit all environment variables from parent process
+        ...replaceEnvVars(conf.env || {}), // Override with configured env vars
+      };
       env['PATH'] = expandEnvVars(process.env.PATH as string) || '';
 
       // Add UV_DEFAULT_INDEX from settings if available (for Python packages)
@@ -180,9 +199,8 @@ export const initializeClientsFromSettings = (isInit: boolean): ServerInfo[] => 
             // Save tools as vector embeddings for search (only when smart routing is enabled)
             if (serverInfo.tools.length > 0) {
               try {
-                const settings = loadSettings();
-                const smartRoutingEnabled = settings.systemConfig?.smartRouting?.enabled || false;
-                if (smartRoutingEnabled) {
+                const smartRoutingConfig = getSmartRoutingConfig();
+                if (smartRoutingConfig.enabled) {
                   console.log(
                     `Smart routing enabled - saving vector embeddings for server ${name}`,
                   );
@@ -388,7 +406,7 @@ export const toggleServerStatus = async (
   }
 };
 
-const handleListToolsRequest = async (_: any, extra: any) => {
+export const handleListToolsRequest = async (_: any, extra: any) => {
   const sessionId = extra.sessionId || '';
   const group = getGroup(sessionId);
   console.log(`Handling ListToolsRequest for group: ${group}`);
@@ -480,8 +498,8 @@ Available servers: ${serversList}`;
   };
 };
 
-const handleCallToolRequest = async (request: any, extra: any) => {
-  console.log(`Handling CallToolRequest for tool: ${request.params.name}`);
+export const handleCallToolRequest = async (request: any, extra: any) => {
+  console.log(`Handling CallToolRequest for tool: ${JSON.stringify(request.params)}`);
   try {
     // Special handling for agent group tools
     if (request.params.name === 'search_tools') {
@@ -577,14 +595,17 @@ const handleCallToolRequest = async (request: any, extra: any) => {
       // arguments parameter is now optional
 
       let targetServerInfo: ServerInfo | undefined;
-
-      // Find the first server that has this tool
-      targetServerInfo = serverInfos.find(
-        (serverInfo) =>
-          serverInfo.status === 'connected' &&
-          serverInfo.enabled !== false &&
-          serverInfo.tools.some((tool) => tool.name === toolName),
-      );
+      if (extra && extra.server) {
+        targetServerInfo = getServerByName(extra.server);
+      } else {
+        // Find the first server that has this tool
+        targetServerInfo = serverInfos.find(
+          (serverInfo) =>
+            serverInfo.status === 'connected' &&
+            serverInfo.enabled !== false &&
+            serverInfo.tools.some((tool) => tool.name === toolName),
+        );
+      }
 
       if (!targetServerInfo) {
         throw new Error(`No available servers found with tool: ${toolName}`);
